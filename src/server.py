@@ -2,10 +2,12 @@ from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
 import whisper
 import tempfile
+import asyncio
+import io
 
 app = FastAPI()
 
-model = whisper.load_model("base")
+model = whisper.load_model("medium")
 
 html = """
 <!DOCTYPE html>
@@ -38,7 +40,7 @@ html = """
                     record.onclick = (e) => {
                         e.currentTarget.disabled = true;
                         stop.disabled = false;
-                        mediaRecorder.start();
+                        mediaRecorder.start(2000);
                         console.log(mediaRecorder.state);
                         console.log("recorder started");
                     };
@@ -50,14 +52,19 @@ html = """
                         console.log("recorder stopped");
                     };
                     mediaRecorder.ondataavailable = (e) => {
-                        chunks.push(e.data);
+                        console.log("nodataavailable");
+                        if (e.data && e.data.size > 0) {
+                            e.data.arrayBuffer().then(buf => {
+                                ws.send(buf);
+                            });
+                        }
                     };
                     mediaRecorder.onstop = (e) => {
-                        const blob = new Blob(chunks, { type: "audio/webm" });
-                        blob.arrayBuffer().then(buf => {
-                            ws.send(buf);
-                            chunks = [];
-                        });
+                        if (e.data && e.data.size > 0) {
+                            e.data.arrayBuffer().then(buf => {
+                                ws.send(buf);
+                            });
+                        }
                     };
                 })
                 .catch((err) => {
@@ -77,13 +84,19 @@ async def get():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    buffer = bytearray()
+    last_transcribe = asyncio.get_event_loop().time()
     while True:
         data = await websocket.receive_bytes()
-        with tempfile.NamedTemporaryFile(suffix=".webm") as tmp:
-            tmp.write(data)
-            tmp.flush()
-            result = model.transcribe(tmp.name)
+        buffer.extend(data)
+        now = asyncio.get_event_loop().time()
+        if now - last_transcribe > 4 and len(buffer) > 0:
+            with tempfile.NamedTemporaryFile(suffix=".webm") as tmp:
+                tmp.write(buffer)
+                tmp.flush()
+                result = model.transcribe(tmp.name, language="ja")
+                last_transcribe = now
             print("********************************")
             print(result["text"])
             print("********************************")
-        await websocket.send_text(f"Message text was: {data}")
+            await websocket.send_text(result["text"])
