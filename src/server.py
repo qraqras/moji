@@ -7,7 +7,7 @@ import io
 
 app = FastAPI()
 
-model = whisper.load_model("tiny")
+model = whisper.load_model("base")
 
 html = """
 <!DOCTYPE html>
@@ -121,29 +121,41 @@ async def websocket_endpoint(websocket: WebSocket):
     last_transcribe = asyncio.get_event_loop().time()
     with tempfile.NamedTemporaryFile(suffix=".webm") as tmp:
         try:
+            final_segment_start = 0
             while True:
                 data = await websocket.receive_bytes()
                 if len(data) == 0:
-                    output = await transcribe(tmp, buffer)
-                    await websocket.send_text(output)
-                    print(output)
-                    buffer = bytearray()
+                    #output = await transcribe(tmp, buffer)
+                    #await websocket.send_text(output)
+                    #print(output)
+                    #buffer = bytearray()
+                    pass
                 else:
                     buffer.extend(data)
                 now = asyncio.get_event_loop().time()
-                if now - last_transcribe > 30 and len(buffer) > 0:
+                if now - last_transcribe > 120 and len(buffer) > 0:
                     last_transcribe = now
-                    output = await transcribe(tmp, buffer)
+
+                    tmp.write(data)
+                    tmp.flush()
+                    print(final_segment_start)
+                    result = model.transcribe(tmp.name, language="ja", clip_timestamps=str(final_segment_start))
+                    lines = []
+                    for segment in result["segments"]:
+                        lines.append(f"[{segment["start"]:.2f}-{segment["end"]:.2f}]\t{segment["text"]}")
+                    output = "\n".join(lines)
+
                     await websocket.send_text(output)
                     print(output)
+                    final_segment_start = result["segments"][-1]["start"]
         except WebSocketDisconnect:
             print("disconnected!")
 
-async def transcribe(file, data):
+async def transcribe(file, data, clip_timestamps = "0"):
     file.write(data)
     file.flush()
-    result = model.transcribe(file.name, language="ja")
+    result = model.transcribe(file.name, language="ja", clip_timestamps=clip_timestamps)
     lines = []
-    for segment in result['segments']:
-        lines.append(f"[{segment['start']}-{segment['end']}]\t{segment["text"]}")
+    for segment in result["segments"]:
+        lines.append(f"[{segment["start"]}-{segment["end"]}]\t{segment["text"]}")
     return "\n".join(lines)
