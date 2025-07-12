@@ -7,7 +7,7 @@ import io
 
 app = FastAPI()
 
-model = whisper.load_model("base")
+model = whisper.load_model("base", device="cpu")
 
 html = """
 <!DOCTYPE html>
@@ -117,45 +117,42 @@ async def get():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    buffer = bytearray()
-    last_transcribe = asyncio.get_event_loop().time()
     with tempfile.NamedTemporaryFile(suffix=".webm") as tmp:
         try:
-            final_segment_start = 0
+            buffer = bytearray()
+            last_transcribe = asyncio.get_event_loop().time()
+            next_clip_timestamps = 0
             while True:
                 data = await websocket.receive_bytes()
-                if len(data) == 0:
-                    #output = await transcribe(tmp, buffer)
-                    #await websocket.send_text(output)
-                    #print(output)
-                    #buffer = bytearray()
-                    pass
-                else:
+                if len(data) > 0:
                     buffer.extend(data)
                 now = asyncio.get_event_loop().time()
-                if now - last_transcribe > 120 and len(buffer) > 0:
+                if now - last_transcribe > 60 or len(data) == 0:
                     last_transcribe = now
-
-                    tmp.write(data)
-                    tmp.flush()
-                    print(final_segment_start)
-                    result = model.transcribe(tmp.name, language="ja", clip_timestamps=str(final_segment_start))
-                    lines = []
-                    for segment in result["segments"]:
-                        lines.append(f"[{segment["start"]:.2f}-{segment["end"]:.2f}]\t{segment["text"]}")
-                    output = "\n".join(lines)
-
-                    await websocket.send_text(output)
-                    print(output)
-                    final_segment_start = result["segments"][-1]["start"]
+                    if len(buffer) > 0:
+                        tmp.write(buffer)
+                        tmp.flush()
+                        buffer = bytearray()
+                    result = await transcribe(tmp, str(next_clip_timestamps))
+                    next_clip_timestamps = result["segments"][-1]["start"]
+                    await websocket.send_text(format_transcription(result))
+                if len(data) == 0:
+                    await websocket.close()
+                    break
         except WebSocketDisconnect:
             print("disconnected!")
 
-async def transcribe(file, data, clip_timestamps = "0"):
-    file.write(data)
-    file.flush()
-    result = model.transcribe(file.name, language="ja", clip_timestamps=clip_timestamps)
+
+async def transcribe(file, clip_timestamps = "0"):
+    return model.transcribe(file.name, language="ja", clip_timestamps=str(clip_timestamps))
+
+
+def format_transcription(result):
     lines = []
     for segment in result["segments"]:
-        lines.append(f"[{segment["start"]}-{segment["end"]}]\t{segment["text"]}")
+        line = f"[{segment["start"]:08.2f}-{segment["end"]:08.2f}]\t{segment["text"]}"
+        lines.append(line)
+    print("********************************")
+    print("\n".join(lines))
+    print("********************************")
     return "\n".join(lines)
